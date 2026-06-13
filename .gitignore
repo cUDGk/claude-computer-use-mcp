@@ -1,0 +1,18 @@
+# proprietary helper — never commit; resolved from your local Codex install at runtime
+vendor/
+*.exe
+*.exe.orig
+
+# node
+node_modules/
+npm-debug.log*
+
+# helper runtime markers written into CODEX_HOME (home/) — keep config.json, ignore the rest
+home/computer-use/interrupt-*
+home/computer-use/*.log
+home/config.toml
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
