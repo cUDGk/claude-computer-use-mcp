@@ -135,6 +135,20 @@ claude mcp add claude-computer-use --scope user \
 
 基本フロー: `list_windows` → `activate_window` → `get_window_state`（見る）→ `click`/`type_text` 等（操作）→ 終わったら `end_computer_use`。詳しい運用指針はサーバが MCP の `instructions` として [SKILL.md](SKILL.md) を提供します。
 
+### 省トークンオプション（get_window_state）
+
+画面操作は画像トークンが支配的なので、`get_window_state` に省トークン機能を用意した:
+
+| オプション | 効果 |
+|---|---|
+| 既定（テキスト） | UIAツリーのみ返す。スクショは `include_screenshot:true` のオプトイン |
+| `prune`（既定 true） | ツリーから window/pane/scrollbar 等の構造ノードを除去（index は保持）。`false` で生ツリー |
+| `region:{x,y,w,h}` | スクショを窓相対の矩形に切り出してから返す／OCR。ダイアログだけ読む等で激減 |
+| `ocr:true` | 内蔵 Windows OCR で画素を文字＋座標に変換。Canvas/ゲーム/Electron 等 UIA が拾えない面を画像ゼロで読む |
+| 変化検知 | 直前と同じ UI なら画像を送らず「変化なし」だけ返す。`force:true` で強制再取得 |
+
+スクショ取得時は長辺を `CLAUDE_CUA_MAX_DIM`（既定 1280px）まで自動縮小（1920×1080 で約56%減）。
+
 ### ブラウザ操作の制限
 
 素の Codex helper は **ブラウザ窓に対して URL 許可ポリシーを強制**しますが、これは Windows では未対応のためブラウザ窓（Chrome / Edge / Firefox / Brave 等）の操作は拒否されます。ブラウザ自動化には Playwright などの専用 MCP を使ってください。ネイティブアプリのウィンドウには影響ありません。

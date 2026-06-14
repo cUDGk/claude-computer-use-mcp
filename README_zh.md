@@ -135,6 +135,20 @@ claude mcp add claude-computer-use --scope user \
 
 典型流程：`list_windows` → `activate_window` → `get_window_state`（观察）→ `click`/`type_text`（操作）→ 完成后 `end_computer_use`。服务器会以 MCP `instructions` 字段提供 [SKILL.md](SKILL.md) 作为详细操作指引。
 
+### 省 token 选项（get_window_state）
+
+图形界面自动化中图像 token 占主导，因此 `get_window_state` 提供了这些手段：
+
+| 选项 | 效果 |
+|---|---|
+| 默认（文本） | 仅返回 UIA 树。截图通过 `include_screenshot:true` 显式开启 |
+| `prune`（默认 true） | 从树中剔除 window/pane/scrollbar 等结构节点（保留 index）。`false` 返回原始树 |
+| `region:{x,y,w,h}` | 在返回／OCR 前将截图裁剪为窗口相对矩形——只读一个对话框即可大幅省 token |
+| `ocr:true` | 内置 Windows OCR 将像素转为文本＋坐标。读取 UIA 无法暴露的 Canvas/游戏/Electron 界面，且不耗图像 token |
+| 变化检测 | 再次请求未变化的窗口时返回「无变化」提示而非图像。`force:true` 可强制重取 |
+
+截图时其长边会自动缩小到 `CLAUDE_CUA_MAX_DIM`（默认 1280px；1920×1080 约省 56%）。
+
 ### 浏览器限制
 
 原版 Codex helper 会对浏览器窗口强制实施 **URL 允许策略**，而该策略在 Windows 上尚未支持，因此会拒绝操作浏览器窗口（Chrome / Edge / Firefox / Brave 等）。浏览器自动化请使用专用的浏览器 MCP（例如 Playwright）。原生应用窗口不受影响。

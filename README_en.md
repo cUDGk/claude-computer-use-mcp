@@ -135,6 +135,20 @@ Once registered, the client can call these tools:
 
 Typical flow: `list_windows` → `activate_window` → `get_window_state` (observe) → `click`/`type_text` (act) → `end_computer_use` when done. The server ships [SKILL.md](SKILL.md) as the MCP `instructions` field for detailed operating guidance.
 
+### Token-saving options (get_window_state)
+
+Image tokens dominate GUI automation, so `get_window_state` ships these levers:
+
+| Option | Effect |
+|---|---|
+| default (text) | Returns only the UIA tree. The screenshot is opt-in via `include_screenshot:true` |
+| `prune` (default true) | Drops structural nodes (window/pane/scrollbar) from the tree, keeping indices. `false` for the raw tree |
+| `region:{x,y,w,h}` | Crops the capture to a window-relative rect before return / OCR — read just a dialog for a fraction of the tokens |
+| `ocr:true` | Built-in Windows OCR turns pixels into text+coords. Reads canvas/game/Electron surfaces UIA can't, with no image tokens |
+| change dedup | Re-requesting an unchanged window returns a "no change" note instead of the image. `force:true` to override |
+
+When a screenshot is taken, its long edge is auto-downscaled to `CLAUDE_CUA_MAX_DIM` (default 1280px; ~56% fewer tokens at 1920×1080).
+
 ### Browser limitation
 
 The stock Codex helper enforces a **browser-URL allow policy** that is not yet supported on Windows, so it refuses to drive browser windows (Chrome / Edge / Firefox / Brave, etc.). Use a dedicated browser MCP (e.g. Playwright) for browser automation. Native app windows are unaffected.

@@ -17,6 +17,7 @@
 //   approve: on {approvalRequest:{app}}, resend the same request with meta["x-oai-cua-approved-app"]=app
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, existsSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -194,6 +195,94 @@ function downscaleDataUrl(url) {
   finally { if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} } }
 }
 
+// ---- UIA tree pruning: drop purely structural nodes, keep interactable/named ones (indices preserved) ----
+// The codex helper localizes some control types (JP) and not others (EN), so the noise set lists both.
+const TREE_NOISE = ["ウィンドウ", "window", "pane", "ペイン", "スクロール バー", "scroll bar", "タイトル バー", "title bar", "グループ", "group", "セパレーター", "separator", "区切り", "縮小", "custom", "カスタム"];
+function pruneTree(tree) {
+  if (!tree) return tree;
+  const out = []; let dropped = 0;
+  for (const line of tree.split("\n")) {
+    const m = /^(\s*)(\d+)\s+(.*)$/.exec(line);
+    if (!m) { out.push(line); continue; }            // header / blank — keep verbatim
+    const rest = m[3];
+    if (TREE_NOISE.some((p) => rest === p || rest.startsWith(p + " "))) { dropped++; continue; }
+    out.push(line);
+  }
+  if (dropped) out.push(`\t… ${dropped} structural nodes hidden (pass prune:false for the full tree)`);
+  return out.join("\n");
+}
+
+// ---- change-detection dedup: skip re-sending a byte-identical-UI screenshot for the same window ----
+const sha = (s) => createHash("sha1").update(String(s)).digest("hex");
+const lastSig = new Map(); const delivered = new Set();
+
+// ---- crop a screenshot dataURL to a window-relative region {x,y,w,h} (System.Drawing, no deps) ----
+function cropDataUrl(url, region) {
+  const m = /^data:(image\/[^;]+);base64,(.*)$/s.exec(url || "");
+  const w = Math.round(region?.w ?? region?.width ?? 0), h = Math.round(region?.h ?? region?.height ?? 0);
+  if (!m || w <= 0 || h <= 0) return url;
+  const x = Math.max(0, Math.round(region?.x ?? 0)), y = Math.max(0, Math.round(region?.y ?? 0));
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "cua-crop-"));
+    const inPath = join(dir, "in"), outPath = join(dir, "out.png");
+    writeFileSync(inPath, Buffer.from(m[2], "base64"));
+    const ps = [
+      "$ErrorActionPreference='Stop'", "Add-Type -AssemblyName System.Drawing",
+      `$img=[System.Drawing.Image]::FromFile('${inPath}')`,
+      `$x=[Math]::Min([Math]::Max(0,${x}),$img.Width-1); $y=[Math]::Min([Math]::Max(0,${y}),$img.Height-1)`,
+      `$w=[Math]::Min(${w}, $img.Width-$x); $h=[Math]::Min(${h}, $img.Height-$y)`,
+      "if($w -le 0 -or $h -le 0){$img.Dispose(); exit 2}",
+      "$crop=$img.Clone((New-Object System.Drawing.Rectangle $x,$y,$w,$h),$img.PixelFormat)",
+      `$crop.Save('${outPath}',[System.Drawing.Imaging.ImageFormat]::Png)`,
+      "$crop.Dispose(); $img.Dispose()",
+    ].join("; ");
+    const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { windowsHide: true });
+    if (r.status !== 0 || !existsSync(outPath)) return url;
+    return "data:image/png;base64," + readFileSync(outPath).toString("base64");
+  } catch { return url; }
+  finally { if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} } }
+}
+
+// ---- OCR a screenshot dataURL via the built-in Windows.Media.Ocr engine (no deps); returns text+coords ----
+// Reads pixels the UIA tree can't (canvas / games / custom-drawn Electron) and costs text tokens, not image tokens.
+function ocrDataUrl(url) {
+  const m = /^data:image\/[^;]+;base64,(.*)$/s.exec(url || "");
+  if (!m) return null;
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "cua-ocr-"));
+    const inPath = join(dir, "in.png");
+    writeFileSync(inPath, Buffer.from(m[1], "base64"));
+    const ps = [
+      "$ErrorActionPreference='Stop'", "Add-Type -AssemblyName System.Runtime.WindowsRuntime",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8",
+      "$asTask=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0]",
+      "function Await($op,$t){ $k=$asTask.MakeGenericMethod($t).Invoke($null,@($op)); $k.Wait(-1)|Out-Null; $k.Result }",
+      "[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null",
+      "[Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null",
+      "[Windows.Graphics.Imaging.SoftwareBitmap,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null",
+      "[Windows.Storage.StorageFile,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null",
+      "[Windows.Storage.Streams.IRandomAccessStream,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null",
+      `$sf=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('${inPath}')) ([Windows.Storage.StorageFile])`,
+      "$st=Await ($sf.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])",
+      "$dec=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($st)) ([Windows.Graphics.Imaging.BitmapDecoder])",
+      "$sb=Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])",
+      "$eng=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()",
+      "if(-not $eng){ exit 3 }",
+      "$res=Await ($eng.RecognizeAsync($sb)) ([Windows.Media.Ocr.OcrResult])",
+      "foreach($ln in $res.Lines){ $f=$null; foreach($w in $ln.Words){ $f=$w; break }; $r=$f.BoundingRect; Write-Output ('@('+[int][double]$r.X+','+[int][double]$r.Y+' '+[int][double]$r.Width+'x'+[int][double]$r.Height+') '+$ln.Text) }",
+    ].join("\n");
+    const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { windowsHide: true, encoding: "utf8", maxBuffer: 1 << 24 });
+    if (r.status !== 0) return null;
+    let t = (r.stdout || "").trim();
+    if (!t) return null;
+    // the CJK recognizer inserts a space between every character — collapse them back
+    return t.replace(/([぀-ヿ㐀-鿿＀-￯])\s+(?=[぀-ヿ㐀-鿿＀-￯])/g, "$1");
+  } catch { return null; }
+  finally { if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} } }
+}
+
 // ---- tool dispatch ----
 async function callTool(name, a) {
   a = a || {};
@@ -206,22 +295,43 @@ async function callTool(name, a) {
     case "launch_app": await helper.request("launch_app", { app: String(a.app) }); return [txt("launched " + a.app)];
     case "activate_window": await helper.request("activate_window", { window: win() }); return [txt("activated")];
     case "get_window_state": {
-      // Token economy: the cheap UIA text tree is the default; the screenshot (≈ w*h/750 tokens) is opt-in.
+      // Token economy: UIA text tree by default; the screenshot (≈ w*h/750 tokens) is opt-in. `ocr` and `region`
+      // imply a capture, but the image itself is returned only when include_screenshot is true.
+      const region = a.region && typeof a.region === "object" ? a.region : null;
+      const needCapture = a.include_screenshot === true || a.ocr === true || region != null;
+      const wantText = a.include_text !== false;
       const st = await helper.request("get_window_state", {
         window: win(),
-        include_screenshot: a.include_screenshot === true,
-        include_text: a.include_text !== false,
+        include_screenshot: needCapture,
+        include_text: wantText,
       });
       const out = [];
-      for (const s of st.screenshots || []) { const img = dataUrlToImage(downscaleDataUrl(s.url)); if (img) out.push(img); }
+      const shot = st.screenshots && st.screenshots[0] && st.screenshots[0].url;
+      // OCR: read pixels as cheap text+coords (no image tokens).
+      let ocr = null;
+      if (a.ocr === true && shot) ocr = ocrDataUrl(region ? cropDataUrl(shot, region) : shot);
+      // The screenshot image is returned only on explicit request, with change-detection dedup.
+      if (a.include_screenshot === true && shot) {
+        const url = region ? cropDataUrl(shot, region) : shot;
+        const key = String(a.app) + "/" + Number(a.id);
+        const sig = wantText && !region ? sha(st.accessibility?.tree || st.window?.title || "") : null;
+        if (!a.force && sig && lastSig.get(key) === sig && delivered.has(key)) {
+          out.push(txt("(no UI change since last capture — screenshot skipped; pass force:true to re-capture)"));
+        } else {
+          const img = dataUrlToImage(downscaleDataUrl(url));
+          if (img) { out.push(img); delivered.add(key); }
+        }
+        if (sig) lastSig.set(key, sig);
+      }
       const lines = ["window: " + JSON.stringify(st.window)];
       const acc = st.accessibility;
       if (acc) {
         if (acc.focused_element) lines.push("focused: " + acc.focused_element);
         if (acc.selected_text) lines.push("selected_text: " + acc.selected_text);
         if (acc.document_text) lines.push("document_text: " + acc.document_text);
-        if (acc.tree) lines.push("", acc.tree);
+        if (acc.tree) lines.push("", a.prune === false ? acc.tree : pruneTree(acc.tree));
       }
+      if (ocr) lines.push("", "OCR (text @(x,y w×h), window-relative):", ocr);
       out.push(txt(lines.join("\n")));
       return out;
     }
@@ -252,7 +362,14 @@ const TOOLS = [
   { name: "get_window", description: "Rehydrate a window by id (and optional app).", inputSchema: { type: "object", properties: WIN, required: ["id"] } },
   { name: "launch_app", description: "Launch an app by id (from list_apps) or an explicit .exe path.", inputSchema: { type: "object", properties: { app: WIN.app }, required: ["app"] } },
   { name: "activate_window", description: "Bring a window to the foreground (restores if minimized).", inputSchema: { type: "object", properties: WIN, required: ["app", "id"] } },
-  { name: "get_window_state", description: "Inspect a window. Returns the UI Automation tree (element indexes) by default — cheap. Pass include_screenshot:true for a screenshot (Graphics.Capture, works occluded); it is downscaled to save tokens.", inputSchema: { type: "object", properties: { ...WIN, include_screenshot: { type: "boolean", description: "Capture a screenshot (default false; opt-in — costs ~width*height/750 tokens, auto-downscaled to CLAUDE_CUA_MAX_DIM long edge)." }, include_text: { type: "boolean", description: "Capture the UI Automation tree (default true)." } }, required: ["app", "id"] } },
+  { name: "get_window_state", description: "Inspect a window. Returns a pruned UI Automation tree (element indexes) by default — cheap. Options: include_screenshot for a (downscaled) image, region to crop it, ocr to read pixels as text+coords, prune:false for the raw tree.", inputSchema: { type: "object", properties: { ...WIN,
+      include_screenshot: { type: "boolean", description: "Return a screenshot image (default false; ~width*height/750 tokens, auto-downscaled to CLAUDE_CUA_MAX_DIM long edge)." },
+      include_text: { type: "boolean", description: "Return the UI Automation tree (default true)." },
+      prune: { type: "boolean", description: "Trim purely structural nodes (window/pane/scrollbar...) from the tree, keeping interactable/named ones and their indices (default true). Pass false for the raw tree." },
+      region: { type: "object", description: "Window-relative rect to crop the screenshot to before returning / OCR.", properties: { x: { type: "integer" }, y: { type: "integer" }, w: { type: "integer" }, h: { type: "integer" } } },
+      ocr: { type: "boolean", description: "Run built-in Windows OCR on the capture and append recognized text with coordinates — reads canvas/game/Electron surfaces UIA can't see, with no image tokens (default false)." },
+      force: { type: "boolean", description: "Bypass the no-change screenshot dedup and always return a fresh image (default false)." }
+    }, required: ["app", "id"] } },
   { name: "click", description: "Click a window: by coordinate (x,y, window-relative) or by element_index from get_window_state.", inputSchema: { type: "object", properties: { ...WIN, x: { type: "integer" }, y: { type: "integer" }, element_index: { type: "integer" }, button: { type: "string", description: "left|right|middle" }, count: { type: "integer", description: "click count" } }, required: ["app", "id"] } },
   { name: "type_text", description: "Type literal text into the focused control.", inputSchema: { type: "object", properties: { ...WIN, text: { type: "string" } }, required: ["app", "id", "text"] } },
   { name: "press_key", description: "Press a key/chord, e.g. 'Return', 'Control+a', 'KP_5' (X keysym names).", inputSchema: { type: "object", properties: { ...WIN, key: { type: "string" } }, required: ["app", "id", "key"] } },

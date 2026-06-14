@@ -47,6 +47,14 @@ only use ids that came from a fresh listing. After a stale-handle error, re-list
   element indexes are usually enough, so prefer text-only and reach for the screenshot deliberately, not by habit.
 - When requested, the screenshot is auto-downscaled (long edge → `CLAUDE_CUA_MAX_DIM`, default 1280px) to cut token cost,
   then returned as an image — inspect it directly.
+- **`prune` (default true)** trims purely structural nodes (window/pane/scrollbar) from the tree, keeping interactable
+  and named elements with their original indices. Pass `prune:false` for the raw tree if something seems missing.
+- **`region:{x,y,w,h}`** crops the capture to a window-relative rect before returning / OCR — read just a dialog or a
+  toolbar for a fraction of the tokens instead of the whole window.
+- **`ocr:true`** runs built-in Windows OCR on the capture and appends recognized text with coordinates. Use it to read
+  canvas / game / custom-drawn surfaces the UIA tree can't expose — it returns text, not an image, so it's cheap.
+- **Change dedup:** re-requesting a screenshot of a window whose UIA tree hasn't changed returns a "no UI change" note
+  instead of the image. Pass `force:true` to override (e.g. for video / animation / canvas).
 - It is an **expensive point-in-time snapshot, not a live view.** Reason over it, then **batch** several actions against
   the window before snapshotting again. Re-snapshot after navigation, a modal/menu/dropdown opening, or any layout change.
 - Accessibility text comes back as a tree: first line `Window: "...", App: ...`, then indexed element lines, then at most
