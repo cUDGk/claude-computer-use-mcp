@@ -50,6 +50,15 @@ exe の解決順:
 
 どれも見つからない場合は、設定方法を示すエラーを返します。
 
+### 環境変数
+
+| 変数 | 既定 | 役割 |
+|---|---|---|
+| `CLAUDE_CUA_HELPER` | （未設定） | Codex の exe をフルパスで明示指定 |
+| `CLAUDE_CUA_MAX_DIM` | `1280` | スクショの長辺をこのピクセル数まで縮小（トークン節約）。`0` で無効 |
+
+トークン消費を抑えるため、`get_window_state` は既定で **UIAツリー（テキスト）のみ**を返します。画像は `include_screenshot:true` を渡した時だけ取得され、その際 `CLAUDE_CUA_MAX_DIM` まで自動縮小されます。スクショは概ね `幅×高さ÷750` トークンかかるため、要素クリックは UIA の `element_index` で済ませ、画素を見たい時だけ画像を要求してください。
+
 ## 特徴
 
 | 機能 | 内容 |
@@ -113,7 +122,7 @@ claude mcp add claude-computer-use --scope user \
 | `get_window` | id からウィンドウを再取得 |
 | `launch_app` | アプリ id または exe パスで起動 |
 | `activate_window` | ウィンドウを前面化（最小化なら復元） |
-| `get_window_state` | スクショ＋（任意で）UIA ツリーを取得 |
+| `get_window_state` | 既定で UIA ツリー（テキスト）を取得。`include_screenshot:true` で縮小スクショも |
 | `click` | 座標 `(x,y)` または要素インデックスでクリック |
 | `type_text` | フォーカス中のコントロールへ文字入力 |
 | `press_key` | キー／コード入力（`Return`, `Control+a`, `KP_5` 等） |

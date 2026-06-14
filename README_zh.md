@@ -50,6 +50,15 @@ exe 解析顺序：
 
 若都未找到，会返回说明如何配置的错误信息。
 
+### 环境变量
+
+| 变量 | 默认值 | 用途 |
+|---|---|---|
+| `CLAUDE_CUA_HELPER` | （未设置） | 以完整路径显式指定 Codex 的 exe |
+| `CLAUDE_CUA_MAX_DIM` | `1280` | 将截图长边缩小到该像素数（节省 token）。`0` 表示禁用 |
+
+为降低 token 消耗，`get_window_state` **默认只返回 UIA 树（文本）**。仅当传入 `include_screenshot:true` 时才截图，并自动缩小到 `CLAUDE_CUA_MAX_DIM`。截图大约消耗 `宽×高÷750` 个 token，因此请优先用 UIA 的 `element_index` 进行点击，仅在需要查看画面时才请求图像。
+
 ## 特性
 
 | 能力 | 说明 |
@@ -113,7 +122,7 @@ claude mcp add claude-computer-use --scope user \
 | `get_window` | 按 id 重新获取窗口 |
 | `launch_app` | 按应用 id 或 exe 路径启动 |
 | `activate_window` | 将窗口置于前台（最小化则还原） |
-| `get_window_state` | 获取截图 ＋（可选）UIA 树 |
+| `get_window_state` | 默认返回 UIA 树（文本）；传入 `include_screenshot:true` 可获取缩小后的截图 |
 | `click` | 按坐标 `(x,y)` 或元素索引点击 |
 | `type_text` | 向焦点控件输入文本 |
 | `press_key` | 按键 / 组合键（`Return`、`Control+a`、`KP_5` 等） |

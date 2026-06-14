@@ -50,6 +50,15 @@ Helper resolution order:
 
 If none is found, it returns an error explaining how to configure it.
 
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CLAUDE_CUA_HELPER` | (unset) | Explicit full path to the Codex exe |
+| `CLAUDE_CUA_MAX_DIM` | `1280` | Downscale a screenshot's long edge to this many pixels (token saving). `0` disables |
+
+To keep token usage low, `get_window_state` returns **only the UIA tree (text) by default**. A screenshot is captured only when you pass `include_screenshot:true`, and is then auto-downscaled to `CLAUDE_CUA_MAX_DIM`. A screenshot costs roughly `width*height/750` tokens, so prefer clicking by UIA `element_index` and request an image only when you need to see pixels.
+
 ## Features
 
 | Capability | Detail |
@@ -113,7 +122,7 @@ Once registered, the client can call these tools:
 | `get_window` | Rehydrate a window by id |
 | `launch_app` | Launch by app id or exe path |
 | `activate_window` | Bring a window foreground (restores if minimized) |
-| `get_window_state` | Capture a screenshot + (optionally) the UIA tree |
+| `get_window_state` | Returns the UIA tree (text) by default; pass `include_screenshot:true` for a downscaled screenshot |
 | `click` | Click by coordinate `(x,y)` or by element index |
 | `type_text` | Type into the focused control |
 | `press_key` | Press a key/chord (`Return`, `Control+a`, `KP_5`, ...) |

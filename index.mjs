@@ -17,8 +17,8 @@
 //   approve: on {approvalRequest:{app}}, resend the same request with meta["x-oai-cua-approved-app"]=app
 
 import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { readdirSync, existsSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -158,6 +158,42 @@ function dataUrlToImage(url) {
   return { type: "image", data: m[2], mimeType: m[1] };
 }
 
+// Screenshot token cost scales with pixel count (≈ width*height/750), not bytes — so we resize the
+// long edge down to MAX_DIM before handing the image to the model. 0 disables. Resize uses .NET
+// System.Drawing via PowerShell (no npm deps, same trick as the clipboard helpers). On any failure
+// the original image is returned untouched, so a broken resize never loses the screenshot.
+const MAX_DIM = Number(process.env.CLAUDE_CUA_MAX_DIM ?? 1280);
+function downscaleDataUrl(url) {
+  if (!Number.isFinite(MAX_DIM) || MAX_DIM <= 0) return url;
+  const m = /^data:(image\/[^;]+);base64,(.*)$/s.exec(url || "");
+  if (!m) return url;
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "cua-"));
+    const inPath = join(dir, "in"), outPath = join(dir, "out.jpg");
+    writeFileSync(inPath, Buffer.from(m[2], "base64"));
+    const ps = [
+      "$ErrorActionPreference='Stop'", "Add-Type -AssemblyName System.Drawing",
+      `$img=[System.Drawing.Image]::FromFile('${inPath}')`,
+      `$s=[Math]::Min(1.0, ${MAX_DIM}/[Math]::Max($img.Width,$img.Height))`,
+      "if($s -ge 1.0){$img.Dispose(); exit 2}", // already small enough — keep original
+      "$nw=[int]($img.Width*$s); $nh=[int]($img.Height*$s)",
+      "$bmp=New-Object System.Drawing.Bitmap $nw,$nh",
+      "$g=[System.Drawing.Graphics]::FromImage($bmp)",
+      "$g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic",
+      "$g.DrawImage($img,0,0,$nw,$nh)",
+      "$enc=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|?{$_.MimeType -eq 'image/jpeg'}",
+      "$p=New-Object System.Drawing.Imaging.EncoderParameters 1",
+      "$p.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality),([int64]82)",
+      `$bmp.Save('${outPath}',$enc,$p)`, "$g.Dispose(); $bmp.Dispose(); $img.Dispose()",
+    ].join("; ");
+    const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { windowsHide: true });
+    if (r.status !== 0 || !existsSync(outPath)) return url; // status 2 (no resize) or any error => keep original
+    return "data:image/jpeg;base64," + readFileSync(outPath).toString("base64");
+  } catch { return url; }
+  finally { if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} } }
+}
+
 // ---- tool dispatch ----
 async function callTool(name, a) {
   a = a || {};
@@ -170,13 +206,14 @@ async function callTool(name, a) {
     case "launch_app": await helper.request("launch_app", { app: String(a.app) }); return [txt("launched " + a.app)];
     case "activate_window": await helper.request("activate_window", { window: win() }); return [txt("activated")];
     case "get_window_state": {
+      // Token economy: the cheap UIA text tree is the default; the screenshot (≈ w*h/750 tokens) is opt-in.
       const st = await helper.request("get_window_state", {
         window: win(),
-        include_screenshot: a.include_screenshot !== false,
-        include_text: a.include_text === true,
+        include_screenshot: a.include_screenshot === true,
+        include_text: a.include_text !== false,
       });
       const out = [];
-      for (const s of st.screenshots || []) { const img = dataUrlToImage(s.url); if (img) out.push(img); }
+      for (const s of st.screenshots || []) { const img = dataUrlToImage(downscaleDataUrl(s.url)); if (img) out.push(img); }
       const lines = ["window: " + JSON.stringify(st.window)];
       const acc = st.accessibility;
       if (acc) {
@@ -215,7 +252,7 @@ const TOOLS = [
   { name: "get_window", description: "Rehydrate a window by id (and optional app).", inputSchema: { type: "object", properties: WIN, required: ["id"] } },
   { name: "launch_app", description: "Launch an app by id (from list_apps) or an explicit .exe path.", inputSchema: { type: "object", properties: { app: WIN.app }, required: ["app"] } },
   { name: "activate_window", description: "Bring a window to the foreground (restores if minimized).", inputSchema: { type: "object", properties: WIN, required: ["app", "id"] } },
-  { name: "get_window_state", description: "Capture a window: screenshot (Graphics.Capture, works occluded) and/or UI Automation tree with element indexes. Returns image(s) + text.", inputSchema: { type: "object", properties: { ...WIN, include_screenshot: { type: "boolean", description: "Capture screenshot (default true)." }, include_text: { type: "boolean", description: "Capture accessibility tree (default false)." } }, required: ["app", "id"] } },
+  { name: "get_window_state", description: "Inspect a window. Returns the UI Automation tree (element indexes) by default — cheap. Pass include_screenshot:true for a screenshot (Graphics.Capture, works occluded); it is downscaled to save tokens.", inputSchema: { type: "object", properties: { ...WIN, include_screenshot: { type: "boolean", description: "Capture a screenshot (default false; opt-in — costs ~width*height/750 tokens, auto-downscaled to CLAUDE_CUA_MAX_DIM long edge)." }, include_text: { type: "boolean", description: "Capture the UI Automation tree (default true)." } }, required: ["app", "id"] } },
   { name: "click", description: "Click a window: by coordinate (x,y, window-relative) or by element_index from get_window_state.", inputSchema: { type: "object", properties: { ...WIN, x: { type: "integer" }, y: { type: "integer" }, element_index: { type: "integer" }, button: { type: "string", description: "left|right|middle" }, count: { type: "integer", description: "click count" } }, required: ["app", "id"] } },
   { name: "type_text", description: "Type literal text into the focused control.", inputSchema: { type: "object", properties: { ...WIN, text: { type: "string" } }, required: ["app", "id", "text"] } },
   { name: "press_key", description: "Press a key/chord, e.g. 'Return', 'Control+a', 'KP_5' (X keysym names).", inputSchema: { type: "object", properties: { ...WIN, key: { type: "string" } }, required: ["app", "id", "key"] } },

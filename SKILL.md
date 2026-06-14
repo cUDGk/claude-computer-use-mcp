@@ -41,8 +41,12 @@ only use ids that came from a fresh listing. After a stale-handle error, re-list
 
 ## get_window_state
 
-- Defaults: `include_screenshot:true`, `include_text:false`. The screenshot is returned as an image — inspect it directly.
-- For element indexes / readable structure, pass `include_text:true`. Request both only when you truly need both.
+- **Defaults: `include_text:true`, `include_screenshot:false`.** The UI Automation tree (cheap, text) comes back by
+  default. A screenshot costs roughly `width*height/750` tokens, so it is **opt-in** — pass `include_screenshot:true`
+  only when you actually need to see pixels (layout, images, canvas, visual confirmation). For clicking, the text tree's
+  element indexes are usually enough, so prefer text-only and reach for the screenshot deliberately, not by habit.
+- When requested, the screenshot is auto-downscaled (long edge → `CLAUDE_CUA_MAX_DIM`, default 1280px) to cut token cost,
+  then returned as an image — inspect it directly.
 - It is an **expensive point-in-time snapshot, not a live view.** Reason over it, then **batch** several actions against
   the window before snapshotting again. Re-snapshot after navigation, a modal/menu/dropdown opening, or any layout change.
 - Accessibility text comes back as a tree: first line `Window: "...", App: ...`, then indexed element lines, then at most
