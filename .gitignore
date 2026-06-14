@@ -13,7 +13,7 @@ home/computer-use/*.log
 home/config.toml
 
 # test artifacts
-test/crop_out.*
+test/*_out.*
 
 # os / editor
 .DS_Store
