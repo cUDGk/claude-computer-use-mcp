@@ -64,7 +64,10 @@ only use ids that came from a fresh listing. After a stale-handle error, re-list
 
 ## Interaction
 
-- Coordinates are **window-relative**: `(0,0)` is the window's top-left. Prefer input injection over element targeting.
+- Coordinates are **screenshot-relative**: `(0,0)` is the window's top-left. Give x/y exactly as you read them off the
+  screenshot from `get_window_state` (or its OCR boxes) — they are auto-mapped to true window pixels even when the
+  screenshot was downscaled, so never rescale them yourself. `region` coordinates work the same way. Prefer input
+  injection over element targeting.
 - Click by coordinate (`x,y`) for most things; click by `element_index` (from the latest `get_window_state` text) when a
   stable element is clearer. After an action that may change layout/focus/modality, re-snapshot before reusing indexes.
 - `type_text` sends literal text only. Use `press_key` for Enter/Tab/arrows/Escape and chords — don't embed control

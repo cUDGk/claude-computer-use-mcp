@@ -12,6 +12,9 @@ home/computer-use/interrupt-*
 home/computer-use/*.log
 home/config.toml
 
+# test artifacts
+test/crop_out.*
+
 # os / editor
 .DS_Store
 Thumbs.db

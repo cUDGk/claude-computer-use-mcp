@@ -195,6 +195,37 @@ function downscaleDataUrl(url) {
   finally { if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} } }
 }
 
+// ---- displayed↔actual coordinate scaling ----
+// The model sees a screenshot downscaled to MAX_DIM, so its coordinates are in that *displayed* space. We remember
+// the per-window scale (actualLongEdge / displayedLongEdge ≥ 1) so every coordinate the model gives back (click /
+// region) or reads (OCR) round-trips to true window pixels — clicks land exactly where they did before downscaling.
+const scaleByWin = new Map();
+function imageSize(buf) {
+  if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }; // PNG IHDR
+  if (buf.length >= 4 && buf[0] === 0xFF && buf[1] === 0xD8) {                                                              // JPEG: find a SOF marker
+    let o = 2;
+    while (o + 9 < buf.length) {
+      if (buf[o] !== 0xFF) { o++; continue; }
+      const marker = buf[o + 1];
+      if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) return { h: buf.readUInt16BE(o + 5), w: buf.readUInt16BE(o + 7) };
+      o += 2 + buf.readUInt16BE(o + 2);
+    }
+  }
+  return null;
+}
+function scaleOf(dataUrl) {
+  if (!Number.isFinite(MAX_DIM) || MAX_DIM <= 0) return 1;
+  const m = /^data:image\/[^;]+;base64,(.*)$/s.exec(dataUrl || "");
+  if (!m) return 1;
+  try { const sz = imageSize(Buffer.from(m[1], "base64")); if (!sz) return 1; const long = Math.max(sz.w, sz.h); return long > MAX_DIM ? long / MAX_DIM : 1; } catch { return 1; }
+}
+// shift OCR boxes from a (possibly cropped) actual-pixel capture back into full-window displayed coordinates
+function remapOcr(text, regionA, scale) {
+  const ox = regionA ? regionA.x : 0, oy = regionA ? regionA.y : 0;
+  return text.replace(/@\((\d+),(\d+)\s+(\d+)x(\d+)\)/g, (_, x, y, w, h) =>
+    `@(${Math.round((ox + +x) / scale)},${Math.round((oy + +y) / scale)} ${Math.round(+w / scale)}x${Math.round(+h / scale)})`);
+}
+
 // ---- UIA tree pruning: drop purely structural nodes, keep interactable/named ones (indices preserved) ----
 // The codex helper localizes some control types (JP) and not others (EN), so the noise set lists both.
 const TREE_NOISE = ["ウィンドウ", "window", "pane", "ペイン", "スクロール バー", "scroll bar", "タイトル バー", "title bar", "グループ", "group", "セパレーター", "separator", "区切り", "縮小", "custom", "カスタム"];
@@ -307,13 +338,24 @@ async function callTool(name, a) {
       });
       const out = [];
       const shot = st.screenshots && st.screenshots[0] && st.screenshots[0].url;
-      // OCR: read pixels as cheap text+coords (no image tokens).
+      const key = String(a.app) + "/" + Number(a.id);
+      // Track the downscale factor so coordinates round-trip to real window pixels (see scaleByWin).
+      const scale = shot ? scaleOf(shot) : (scaleByWin.get(key) || 1);
+      if (shot) scaleByWin.set(key, scale);
+      // A region from the model is in displayed coords → convert to actual pixels for the real capture/crop.
+      const regionA = region ? {
+        x: Math.round((region.x ?? 0) * scale), y: Math.round((region.y ?? 0) * scale),
+        w: Math.round((region.w ?? region.width ?? 0) * scale), h: Math.round((region.h ?? region.height ?? 0) * scale),
+      } : null;
+      // OCR: read pixels as cheap text+coords (no image tokens); boxes come back in displayed window coords.
       let ocr = null;
-      if (a.ocr === true && shot) ocr = ocrDataUrl(region ? cropDataUrl(shot, region) : shot);
+      if (a.ocr === true && shot) {
+        const raw = ocrDataUrl(regionA ? cropDataUrl(shot, regionA) : shot);
+        if (raw) ocr = remapOcr(raw, regionA, scale);
+      }
       // The screenshot image is returned only on explicit request, with change-detection dedup.
       if (a.include_screenshot === true && shot) {
-        const url = region ? cropDataUrl(shot, region) : shot;
-        const key = String(a.app) + "/" + Number(a.id);
+        const url = regionA ? cropDataUrl(shot, regionA) : shot;
         const sig = wantText && !region ? sha(st.accessibility?.tree || st.window?.title || "") : null;
         if (!a.force && sig && lastSig.get(key) === sig && delivered.has(key)) {
           out.push(txt("(no UI change since last capture — screenshot skipped; pass force:true to re-capture)"));
@@ -324,6 +366,7 @@ async function callTool(name, a) {
         if (sig) lastSig.set(key, sig);
       }
       const lines = ["window: " + JSON.stringify(st.window)];
+      if (shot && scale !== 1 && !region) lines.push(`coords: full screenshot shown at 1/${scale.toFixed(2)} scale — give click/region coordinates as you read them here; they are auto-mapped to the window.`);
       const acc = st.accessibility;
       if (acc) {
         if (acc.focused_element) lines.push("focused: " + acc.focused_element);
@@ -331,20 +374,22 @@ async function callTool(name, a) {
         if (acc.document_text) lines.push("document_text: " + acc.document_text);
         if (acc.tree) lines.push("", a.prune === false ? acc.tree : pruneTree(acc.tree));
       }
-      if (ocr) lines.push("", "OCR (text @(x,y w×h), window-relative):", ocr);
+      if (ocr) lines.push("", "OCR (text @(x,y w×h) in screenshot coords — usable directly for click):", ocr);
       out.push(txt(lines.join("\n")));
       return out;
     }
-    case "click":
+    case "click": {
+      const sc = scaleByWin.get(String(a.app) + "/" + Number(a.id)) || 1; // map displayed coords → window pixels
       if (a.element_index !== undefined)
         await helper.request("click_element", { window: win(), element_index: Number(a.element_index), click_count: Number(a.count || 1), mouse_button: a.button || "left" });
       else
-        await helper.request("click", { window: win(), x: Number(a.x), y: Number(a.y), click_count: Number(a.count || 1), mouse_button: a.button || "left", ...(a.screenshotId ? { screenshotId: a.screenshotId } : {}) });
+        await helper.request("click", { window: win(), x: Math.round(Number(a.x) * sc), y: Math.round(Number(a.y) * sc), click_count: Number(a.count || 1), mouse_button: a.button || "left", ...(a.screenshotId ? { screenshotId: a.screenshotId } : {}) });
       return [txt("clicked")];
+    }
     case "type_text": await helper.request("type_text", { window: win(), text: String(a.text) }); return [txt("typed")];
     case "press_key": await helper.request("press_key", { window: win(), key: String(a.key) }); return [txt("pressed " + a.key)];
-    case "scroll": await helper.request("scroll", { window: win(), x: Number(a.x), y: Number(a.y), scrollX: Number(a.scroll_x || 0), scrollY: Number(a.scroll_y || 0) }); return [txt("scrolled")];
-    case "drag": await helper.request("drag", { window: win(), from_x: Number(a.from_x), from_y: Number(a.from_y), to_x: Number(a.to_x), to_y: Number(a.to_y) }); return [txt("dragged")];
+    case "scroll": { const sc = scaleByWin.get(String(a.app) + "/" + Number(a.id)) || 1; await helper.request("scroll", { window: win(), x: Math.round(Number(a.x) * sc), y: Math.round(Number(a.y) * sc), scrollX: Number(a.scroll_x || 0), scrollY: Number(a.scroll_y || 0) }); return [txt("scrolled")]; }
+    case "drag": { const sc = scaleByWin.get(String(a.app) + "/" + Number(a.id)) || 1; await helper.request("drag", { window: win(), from_x: Math.round(Number(a.from_x) * sc), from_y: Math.round(Number(a.from_y) * sc), to_x: Math.round(Number(a.to_x) * sc), to_y: Math.round(Number(a.to_y) * sc) }); return [txt("dragged")]; }
     case "set_value": await helper.request("set_value", { window: win(), element_index: Number(a.element_index), value: String(a.value) }); return [txt("set")];
     case "perform_secondary_action": await helper.request("perform_secondary_action", { window: win(), element_index: Number(a.element_index), action: String(a.action) }); return [txt("done")];
     case "clipboard_get": return [txt(clipboardGet())];
