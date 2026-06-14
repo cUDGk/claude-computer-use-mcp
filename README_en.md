@@ -147,7 +147,7 @@ Image tokens dominate GUI automation, so `get_window_state` ships these levers:
 | `ocr:true` | Built-in Windows OCR turns pixels into text+coords. Reads canvas/game/Electron surfaces UIA can't, with no image tokens |
 | change dedup | Re-requesting an unchanged window returns a "no change" note instead of the image. `force:true` to override |
 
-When a screenshot is taken, its long edge is auto-downscaled to `CLAUDE_CUA_MAX_DIM` (default 1280px; ~56% fewer tokens at 1920×1080).
+When a screenshot is taken, its long edge is auto-downscaled to `CLAUDE_CUA_MAX_DIM` (default 1280px; ~56% fewer tokens at 1920×1080). Even when downscaled, **`click`/`region`/OCR coordinates are auto-mapped to true window pixels**, so clicks land accurately — pass coordinates exactly as you see them in the screenshot, no rescaling.
 
 ### Browser limitation
 

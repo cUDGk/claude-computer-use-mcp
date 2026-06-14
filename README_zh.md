@@ -147,7 +147,7 @@ claude mcp add claude-computer-use --scope user \
 | `ocr:true` | 内置 Windows OCR 将像素转为文本＋坐标。读取 UIA 无法暴露的 Canvas/游戏/Electron 界面，且不耗图像 token |
 | 变化检测 | 再次请求未变化的窗口时返回「无变化」提示而非图像。`force:true` 可强制重取 |
 
-截图时其长边会自动缩小到 `CLAUDE_CUA_MAX_DIM`（默认 1280px；1920×1080 约省 56%）。
+截图时其长边会自动缩小到 `CLAUDE_CUA_MAX_DIM`（默认 1280px；1920×1080 约省 56%）。即使缩小，**`click`/`region`/OCR 的坐标也会自动映射到真实窗口像素**，因此点击精确命中——按截图所见坐标传入即可，无需换算。
 
 ### 浏览器限制
 

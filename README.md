@@ -147,7 +147,7 @@ claude mcp add claude-computer-use --scope user \
 | `ocr:true` | 内蔵 Windows OCR で画素を文字＋座標に変換。Canvas/ゲーム/Electron 等 UIA が拾えない面を画像ゼロで読む |
 | 変化検知 | 直前と同じ UI なら画像を送らず「変化なし」だけ返す。`force:true` で強制再取得 |
 
-スクショ取得時は長辺を `CLAUDE_CUA_MAX_DIM`（既定 1280px）まで自動縮小（1920×1080 で約56%減）。
+スクショ取得時は長辺を `CLAUDE_CUA_MAX_DIM`（既定 1280px）まで自動縮小（1920×1080 で約56%減）。縮小しても **`click`/`region`/OCR の座標は内部で実窓ピクセルへ自動マッピング**されるため、スクショで見たままの座標を渡せばクリックは正確に着弾する（スケール補正は不要）。
 
 ### ブラウザ操作の制限
 
